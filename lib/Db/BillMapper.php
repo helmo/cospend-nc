@@ -529,7 +529,7 @@ class BillMapper extends QBMapper {
 		}
 		// handle the search term (what, comment, amount+-1)
 		if ($searchTerm !== null && $searchTerm !== '') {
-			$qb = $this->applyBillSearchTermCondition($qb, $searchTerm, 'bi');
+			$qb = $this->applyBillSearchTermCondition($qb, $searchTerm, 'bi', $projectId);
 		}
 		if ($reverse) {
 			$qb->orderBy('timestamp', 'DESC');
@@ -655,7 +655,7 @@ class BillMapper extends QBMapper {
 		];
 	}
 
-	private function applyBillSearchTermCondition(IQueryBuilder $qb, string $term, string $billTableAlias): IQueryBuilder {
+	private function applyBillSearchTermCondition(IQueryBuilder $qb, string $term, string $billTableAlias, ?string $projectId = null): IQueryBuilder {
 		$term = strtolower($term);
 		$or = $qb->expr()->orx();
 		$or->add(
@@ -678,6 +678,29 @@ class BillMapper extends QBMapper {
 				$qb->expr()->lte($billTableAlias . '.amount', $qb->createNamedParameter($amountMax, IQueryBuilder::PARAM_STR))
 			);
 			$or->add($andExpr);
+		}
+		// search by payer or ower name
+		if ($projectId !== null) {
+			$payerSubQb = $this->db->getQueryBuilder();
+			$payerSubQb->select('pm_search.id')
+				->from('cospend_members', 'pm_search')
+				->where(
+					$payerSubQb->expr()->eq('pm_search.id', $billTableAlias . '.payer_id'),
+					$payerSubQb->expr()->eq('pm_search.project_id', $qb->createNamedParameter($projectId, IQueryBuilder::PARAM_STR)),
+					$payerSubQb->expr()->iLike('pm_search.name', $qb->createNamedParameter('%' . $this->db->escapeLikeParameter($term) . '%', IQueryBuilder::PARAM_STR))
+				);
+			$or->add($qb->createFunction('EXISTS (' . $payerSubQb->getSQL() . ')'));
+
+			$owerSubQb = $this->db->getQueryBuilder();
+			$owerSubQb->select('bo_search.bill_id')
+				->from('cospend_bill_owers', 'bo_search')
+				->innerJoin('bo_search', 'cospend_members', 'om_search', $owerSubQb->expr()->eq('bo_search.member_id', 'om_search.id'))
+				->where(
+					$owerSubQb->expr()->eq('bo_search.bill_id', $billTableAlias . '.id'),
+					$owerSubQb->expr()->eq('om_search.project_id', $qb->createNamedParameter($projectId, IQueryBuilder::PARAM_STR)),
+					$owerSubQb->expr()->iLike('om_search.name', $qb->createNamedParameter('%' . $this->db->escapeLikeParameter($term) . '%', IQueryBuilder::PARAM_STR))
+				);
+			$or->add($qb->createFunction('EXISTS (' . $owerSubQb->getSQL() . ')'));
 		}
 		$qb->andWhere($or);
 		return $qb;
@@ -708,7 +731,7 @@ class BillMapper extends QBMapper {
 				$qb->expr()->eq('b.deleted', $qb->createNamedParameter($deleted, IQueryBuilder::PARAM_INT))
 			);
 		}
-		$qb = $this->applyBillSearchTermCondition($qb, $term, 'b');
+		$qb = $this->applyBillSearchTermCondition($qb, $term, 'b', $projectId);
 		$qb->orderBy('timestamp', 'ASC');
 		$req = $qb->executeQuery();
 
